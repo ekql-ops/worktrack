@@ -1,0 +1,23 @@
+# H2 in PostgreSQL mode, so the same Flyway migration that runs in production
+# runs here too rather than the schema being generated a second, different way.
+spring:
+  datasource:
+    url: jdbc:h2:mem:worktrack;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1
+    username: sa
+    password: ""
+    driver-class-name: org.h2.Driver
+  jpa:
+    hibernate:
+      ddl-auto: validate
+  flyway:
+    enabled: true
+
+worktrack:
+  zone: Europe/London
+  jwt:
+    secret: test-signing-key-that-is-long-enough-for-hmac-sha256
+    ttl-minutes: 60
+  cors:
+    allowed-origins: http://localhost:3000
+  demo:
+    seed: false

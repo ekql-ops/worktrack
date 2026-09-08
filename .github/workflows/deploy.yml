@@ -5,6 +5,11 @@ name: deploy
 on:
   push:
     branches: [main]
+    # The backend has its own workflow; changing it should not trigger a
+    # rebuild and redeploy of an unchanged frontend.
+    paths-ignore:
+      - "backend/**"
+      - ".github/workflows/backend.yml"
   workflow_dispatch:
 
 permissions:
