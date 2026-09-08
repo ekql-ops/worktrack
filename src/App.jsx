@@ -32,7 +32,7 @@ function generateShifts() {
       date: new Date(d),
       label: dow === 6 ? "Sat" : "Mon – Fri",
       grade: "Grade 8",
-      location: "Fresenius Manchester Central",
+      location: "Manchester Central",
     });
   }
   return shifts;

@@ -2,7 +2,7 @@
   "name": "worktrack",
   "version": "1.0.0",
   "private": true,
-  "description": "Employee shift clock-in/out system for Fresenius Manchester Central",
+  "description": "Employee shift clock-in/out system built with React. Runs on seeded demo data.",
   "scripts": {
     "start": "react-scripts start",
     "build": "react-scripts build",
