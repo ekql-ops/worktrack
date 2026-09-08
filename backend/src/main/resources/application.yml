@@ -5,6 +5,19 @@ spring:
     url: ${DATABASE_URL:jdbc:postgresql://localhost:5432/worktrack}
     username: ${DATABASE_USERNAME:worktrack}
     password: ${DATABASE_PASSWORD:worktrack}
+    hikari:
+      # Tuned for a serverless Postgres (Neon) that suspends when idle and
+      # takes a few seconds to wake. The defaults assume a database that is
+      # always there: they hold connections open past the point the provider
+      # has dropped them, then hand out dead ones.
+      maximum-pool-size: 5
+      minimum-idle: 0
+      # Long enough to cover the database waking up.
+      connection-timeout: 30000
+      # Both sit under a typical idle-suspend window, so connections are
+      # retired before the provider closes them underneath us.
+      idle-timeout: 60000
+      max-lifetime: 240000
   jpa:
     open-in-view: false
     hibernate:
