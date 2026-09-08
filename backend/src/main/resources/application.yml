@@ -1,0 +1,45 @@
+spring:
+  application:
+    name: worktrack-api
+  datasource:
+    url: ${DATABASE_URL:jdbc:postgresql://localhost:5432/worktrack}
+    username: ${DATABASE_USERNAME:worktrack}
+    password: ${DATABASE_PASSWORD:worktrack}
+  jpa:
+    open-in-view: false
+    hibernate:
+      # Flyway owns the schema. Hibernate only checks the mapping matches it,
+      # so a drifted entity fails at boot instead of at the first query.
+      ddl-auto: validate
+  flyway:
+    enabled: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+worktrack:
+  zone: ${WORKTRACK_ZONE:Europe/London}
+  jwt:
+    # No default. The app must be told its signing key or it will not start.
+    secret: ${JWT_SECRET}
+    ttl-minutes: ${JWT_TTL_MINUTES:720}
+  cors:
+    allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:3000}
+  demo:
+    # Seeds the sample employees and a week of shifts. Off unless asked for.
+    seed: ${DEMO_SEED:false}
+    password: ${DEMO_PASSWORD:}
+
+server:
+  port: ${PORT:8080}
+
+logging:
+  level:
+    org.springframework.security: INFO
