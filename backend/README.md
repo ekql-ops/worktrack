@@ -80,12 +80,47 @@ enough to be covered by the tests. A partial index would express the same
 rule but only PostgreSQL would accept it, and the constraint would then go
 untested.
 
-## Deploying
+## Deploying to Fly.io
 
-The `Dockerfile` builds a runnable image and honours the `$PORT` the
-platform assigns. Set `DATABASE_URL`, `DATABASE_USERNAME`,
-`DATABASE_PASSWORD`, `JWT_SECRET` and `CORS_ALLOWED_ORIGINS` (which must
-include the frontend's origin) in the platform's environment.
+`fly.toml` and the `Dockerfile` are both in this directory, so everything
+below runs from here.
+
+```bash
+fly auth login
+fly launch --no-deploy          # reads fly.toml; may rename the app
+fly postgres create --name worktrack-db --region lhr
+fly postgres attach worktrack-db
+```
+
+`attach` sets `DATABASE_URL` for you, but in libpq form
+(`postgres://user:pass@host/db`), which JDBC does not accept. Convert it:
+
+```bash
+fly secrets set   DATABASE_URL="jdbc:postgresql://<host>:5432/<database>"   DATABASE_USERNAME="<user>"   DATABASE_PASSWORD="<password>"   JWT_SECRET="$(openssl rand -base64 48)"   CORS_ALLOWED_ORIGINS="https://ekql-ops.github.io"
+
+fly deploy
+fly logs
+curl https://<app>.fly.dev/actuator/health
+```
+
+To seed the sample staff on first boot:
+
+```bash
+fly secrets set DEMO_SEED=true DEMO_PASSWORD="<something>"
+```
+
+Turn `DEMO_SEED` back to `false` afterwards — seeding is skipped once
+employees exist, but leaving it on is a loaded gun pointed at an empty
+database.
+
+### Notes
+
+- `min_machines_running = 0` scales to zero when idle, so the first request
+  after a quiet spell pays a JVM cold start of a few seconds. Fine for a
+  portfolio demo; raise it to 1 if that ever matters.
+- The VM is set to 512mb. Fly's 256mb default is not enough for a JVM with
+  Hibernate and a connection pool, and `JAVA_OPTS` caps the heap at 70% of
+  the container rather than letting the JVM size itself for the host.
 
 **Not yet deployed, and the Docker build has not been executed** — there is
 no Docker daemon on the machine this was written on. Build it locally before
