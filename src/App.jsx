@@ -716,6 +716,19 @@ function AdminDash({ onLogout, sessions, setSessions }) {
 }
 
 // ─── ROOT ──────────────────────────────────────────────────────────────────
+function DemoNotice() {
+  return (
+    <div style={{
+      position:"fixed", bottom:0, left:0, right:0, zIndex:9999,
+      background:"rgba(12,14,20,0.94)", borderTop:"1px solid rgba(255,255,255,0.12)",
+      color:"rgba(255,255,255,0.62)", font:"500 12px/1.5 system-ui, sans-serif",
+      padding:"9px 16px", textAlign:"center", backdropFilter:"blur(6px)"
+    }}>
+      Demo build — seeded sample data, no real employees. Nothing is saved: a refresh resets everything.
+    </div>
+  );
+}
+
 export default function App() {
   const [user,     setUser]     = useState(null);
   const [sessions, setSessions] = useState([]);
@@ -733,6 +746,7 @@ export default function App() {
   return (
     <>
       <StyleInjector/>
+      <DemoNotice/>
       {!user
         ? <ShiftList onLogin={login}/>
         : user.role==="admin"
