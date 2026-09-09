@@ -31,14 +31,18 @@ public final class Dtos {
     }
 
     public record SessionResponse(UUID id, UUID employeeId, String employeeName, String initials,
-                                  UUID shiftId, LocalDate shiftDate, LocalTime shiftEnd,
+                                  String employeeRef, UUID shiftId, LocalDate shiftDate,
+                                  LocalTime shiftStart, LocalTime shiftEnd, String location,
                                   Instant clockInAt, Instant clockOutAt, EndedBy endedBy,
                                   boolean open, boolean overrunning) {
         public static SessionResponse of(WorkSession s, boolean overrunning) {
             return new SessionResponse(
                     s.getId(), s.getEmployee().getId(), s.getEmployee().getFullName(),
-                    s.getEmployee().getInitials(), s.getShift().getId(), s.getShift().getDate(),
-                    s.getShift().getEndTime(), s.getClockInAt(), s.getClockOutAt(),
+                    s.getEmployee().getInitials(), s.getEmployee().getEmployeeRef(),
+                    s.getShift().getId(), s.getShift().getDate(),
+                    s.getShift().getStartTime(), s.getShift().getEndTime(),
+                    s.getShift().getLocation(),
+                    s.getClockInAt(), s.getClockOutAt(),
                     s.getEndedBy(), s.isOpen(), overrunning);
         }
     }
