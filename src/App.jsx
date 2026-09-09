@@ -1,68 +1,51 @@
-import { useState, useEffect, useRef } from "react";
-
-// ─── Config ────────────────────────────────────────────────────────────────
-// 🧪 TESTING MODE — shift window = now → now+30min
-const _n = new Date(), _e = new Date(_n.getTime() + 30 * 60 * 1000);
-const SHIFT_START = { h: _n.getHours(), m: _n.getMinutes() };
-const SHIFT_END   = { h: _e.getHours(), m: _e.getMinutes() };
-// PRODUCTION:
-// const SHIFT_START = { h: 18, m: 30 };
-// const SHIFT_END   = { h: 21, m:  0 };
-
-const ADMIN = { username: "admin", password: "admin123" };
-const EMPLOYEES = [
-  { username: "james.wright", password: "pass123", name: "James Wright",  initials: "JW", id: "12463" },
-  { username: "priya.sharma", password: "pass123", name: "Priya Sharma",  initials: "PS", id: "12464" },
-  { username: "dan.okafor",   password: "pass123", name: "Dan Okafor",    initials: "DO", id: "12465" },
-  { username: "lucy.chen",    password: "pass123", name: "Lucy Chen",     initials: "LC", id: "12466" },
-];
-
-// Generate shifts: Mon–Sat for the next 14 days from today
-function generateShifts() {
-  const shifts = [];
-  const today = new Date();
-  today.setHours(0,0,0,0);
-  for (let i = 0; i < 14; i++) {
-    const d = new Date(today);
-    d.setDate(today.getDate() + i);
-    const dow = d.getDay(); // 0=Sun,6=Sat
-    if (dow === 0) continue; // skip Sunday
-    shifts.push({
-      id: `shift-${i}`,
-      date: new Date(d),
-      label: dow === 6 ? "Sat" : "Mon – Fri",
-      grade: "Grade 8",
-      location: "Manchester Central",
-    });
-  }
-  return shifts;
-}
+import { useState, useEffect, useRef, useCallback } from "react";
+import { api, ApiError, getToken, setToken } from "./api";
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
-const toMins = (h, m) => h * 60 + m;
-const fmt12  = (h, m) => { const p = h>=12?"PM":"AM", hh=h%12||12; return `${hh}:${String(m).padStart(2,"0")} ${p}`; };
-const fmt24  = (h, m) => `${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}`;
+// Shift times now arrive from the API as "HH:MM:SS" and session timestamps as
+// ISO instants, so the formatting helpers work off server data rather than
+// module-level constants invented at page load.
+
+const fmt24 = t => (t ? String(t).slice(0, 5) : "--:--");
+
 const fmtClock     = d => d.toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit",second:"2-digit"});
 const fmtTimestamp = ts => ts ? fmtClock(new Date(ts)) : "—";
 const fmtDuration  = ms => {
   const s=Math.floor(ms/1000),h=Math.floor(s/3600),m=Math.floor((s%3600)/60),sec=s%60;
   if(h>0) return `${h}h ${m}m`; if(m>0) return `${m}m ${sec}s`; return `${sec}s`;
 };
-const fmtDate = d => d.toLocaleDateString("en-GB",{day:"2-digit",month:"2-digit"});
-const fmtDay  = d => d.toLocaleDateString("en-GB",{weekday:"long"});
-const isToday = d => { const t=new Date(); return d.getDate()===t.getDate()&&d.getMonth()===t.getMonth()&&d.getFullYear()===t.getFullYear(); };
+const fmtDate = d => new Date(d).toLocaleDateString("en-GB",{day:"2-digit",month:"2-digit"});
+const fmtDay  = d => new Date(d).toLocaleDateString("en-GB",{weekday:"long"});
 
-const shiftStatus = () => {
-  const t=new Date(), cur=toMins(t.getHours(),t.getMinutes());
-  const start=toMins(SHIFT_START.h,SHIFT_START.m), end=toMins(SHIFT_END.h,SHIFT_END.m);
-  if(cur<start) return "before"; if(cur>=end) return "after"; return "active";
+/** Combines a shift's date ("2026-09-09") and time ("16:30:00") into a Date. */
+const shiftMoment = (date, time) => {
+  const [h, m] = String(time || "00:00:00").split(":").map(Number);
+  const d = new Date(date + "T00:00:00");
+  d.setHours(h, m, 0, 0);
+  return d;
 };
-const secsUntilEnd = () => {
-  const end=new Date(); end.setHours(SHIFT_END.h,SHIFT_END.m,0,0);
-  return Math.max(0,Math.floor((end-new Date())/1000));
-};
-const SHIFT_TOTAL_SECS = (toMins(SHIFT_END.h,SHIFT_END.m)-toMins(SHIFT_START.h,SHIFT_START.m))*60;
 
+const secsUntil = when => Math.max(0, Math.floor((when - new Date()) / 1000));
+
+// ─── Error banner ──────────────────────────────────────────────────────────
+function ErrorBox({ msg }) {
+  if (!msg) return null;
+  return (
+    <div style={{background:"rgba(255,77,109,0.1)",border:"1px solid rgba(255,77,109,0.25)",borderRadius:10,padding:"10px 14px",fontSize:13,color:"#ff8fa3",marginBottom:16,animation:"fadeIn 0.2s ease"}}>
+      {msg}
+    </div>
+  );
+}
+
+// ─── Full-screen loading ───────────────────────────────────────────────────
+function Loading({ label = "Loading…" }) {
+  return (
+    <div className="wt" style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:14}}>
+      <div style={{width:34,height:34,borderRadius:"50%",border:"3px solid rgba(139,120,255,0.2)",borderTopColor:"#8b78ff",animation:"spin 0.8s linear infinite"}}/>
+      <div style={{fontSize:13,color:"rgba(255,255,255,0.4)"}}>{label}</div>
+    </div>
+  );
+}
 // ─── CSS ───────────────────────────────────────────────────────────────────
 const CSS = `
 @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700;800&family=DM+Mono:wght@400;500&display=swap');
@@ -78,6 +61,7 @@ body{background:#07060f;}
 @keyframes toastIn {from{opacity:0;transform:translateY(30px) scale(0.95)}to{opacity:1;transform:translateY(0) scale(1)}}
 @keyframes tapBounce{0%{transform:scale(1)}50%{transform:scale(0.97)}100%{transform:scale(1)}}
 @keyframes checkPop{0%{transform:scale(0)}60%{transform:scale(1.2)}100%{transform:scale(1)}}
+@keyframes spin    {to{transform:rotate(360deg)}}
 
 .wt{font-family:'DM Sans',system-ui,sans-serif;color:#e4e2f0;min-height:100vh;background:#07060f;}
 .mono{font-family:'DM Mono',monospace;}
@@ -199,9 +183,11 @@ function Avatar({ initials, size = 36, color = "#8b78ff" }) {
 }
 
 // ─── Shift Ring ────────────────────────────────────────────────────────────
-function ShiftRing({ secsLeft, late, size = 180 }) {
+// totalSecs is passed in because shift length now comes from the server
+// rather than a constant computed when the module loaded.
+function ShiftRing({ secsLeft, late, size = 180, totalSecs = 0 }) {
   const r=size/2-14, circ=2*Math.PI*r;
-  const pct=Math.max(0,secsLeft/SHIFT_TOTAL_SECS);
+  const pct=totalSecs>0?Math.min(1,Math.max(0,secsLeft/totalSecs)):0;
   const dash=circ*pct;
   const stroke=late?"#ff4d6d":pct<0.15?"#fbbf24":"#8b78ff";
 
@@ -225,42 +211,49 @@ function ShiftRing({ secsLeft, late, size = 180 }) {
     </div>
   );
 }
+// ─── LOGIN ─────────────────────────────────────────────────────────────────
+// The shift list is behind authentication now, so signing in comes first
+// rather than a shift being tapped by an anonymous visitor. Role comes from
+// the token, which is why the old employee/admin toggle is gone.
+function LoginScreen({ onSignedIn }) {
+  const [user, setUser] = useState("");
+  const [pass, setPass] = useState("");
+  const [err,  setErr]  = useState("");
+  const [busy, setBusy] = useState(false);
 
-// ─── LOGIN MODAL (appears after tapping a shift) ───────────────────────────
-function LoginModal({ shift, onSuccess, onClose }) {
-  const [user, setUser]   = useState("");
-  const [pass, setPass]   = useState("");
-  const [err,  setErr]    = useState("");
-  const [loading, setLoad] = useState(false);
-
-  function submit() {
-    setErr(""); setLoad(true);
-    setTimeout(() => {
-      setLoad(false);
-      if (!user.trim() || !pass) { setErr("Fill in both fields."); return; }
-      const acc = EMPLOYEES.find(a => a.username === user && a.password === pass);
-      if (!acc) { setErr("Username or password is incorrect."); return; }
-      onSuccess({ ...acc, role:"employee", loginTime:Date.now(), shift });
-    }, 380);
+  async function submit() {
+    if (busy) return;
+    setErr("");
+    if (!user.trim() || !pass) { setErr("Fill in both fields."); return; }
+    setBusy(true);
+    try {
+      const res = await api.login(user.trim(), pass);
+      setToken(res.token);
+      onSignedIn(res.user);
+    } catch (e) {
+      setErr(e instanceof ApiError ? e.message : "Something went wrong.");
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (
-    <div className="modal-bg" onClick={onClose}>
-      <div className="modal-box" onClick={e=>e.stopPropagation()}>
-        {/* Shift summary */}
-        <div style={{background:"rgba(139,120,255,0.08)",border:"1px solid rgba(139,120,255,0.2)",borderRadius:14,padding:"14px 16px",marginBottom:22}}>
-          <div style={{fontSize:13,fontWeight:700,color:"#b39dff",marginBottom:4}}>Clocking in for</div>
-          <div style={{fontSize:16,fontWeight:700,color:"#fff"}}>{shift.location}</div>
-          <div style={{fontSize:13,color:"rgba(255,255,255,0.45)",marginTop:3}}>
-            {fmtDay(shift.date)} · {fmtDate(shift.date)} · {fmt24(SHIFT_START.h,SHIFT_START.m)}–{fmt24(SHIFT_END.h,SHIFT_END.m)} · {shift.grade}
-          </div>
+    <div className="wt" style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+      <div style={{position:"fixed",inset:0,overflow:"hidden",pointerEvents:"none"}}>
+        <div style={{position:"absolute",top:"-20%",right:"-10%",width:500,height:500,borderRadius:"50%",background:"radial-gradient(circle,rgba(139,120,255,0.1) 0%,transparent 70%)"}}/>
+      </div>
+
+      <div className="wt-card" style={{padding:28,width:"100%",maxWidth:380,position:"relative"}}>
+        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:22}}>
+          <div style={{width:34,height:34,borderRadius:9,background:"linear-gradient(135deg,#8b78ff,#b060f0)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:16}}>⏱</div>
+          <span style={{fontSize:19,fontWeight:800,color:"#fff",letterSpacing:"-0.2px"}}>WorkTrack</span>
         </div>
 
-        {err && (
-          <div style={{background:"rgba(255,77,109,0.1)",border:"1px solid rgba(255,77,109,0.25)",borderRadius:10,padding:"10px 14px",fontSize:13,color:"#ff8fa3",marginBottom:16,animation:"fadeIn 0.2s ease"}}>
-            {err}
-          </div>
-        )}
+        <div style={{fontSize:14,color:"rgba(255,255,255,0.45)",marginBottom:22,lineHeight:1.5}}>
+          Sign in to see your shifts and clock in.
+        </div>
+
+        <ErrorBox msg={err}/>
 
         <div style={{marginBottom:14}}>
           <div style={{fontSize:11,fontWeight:700,letterSpacing:"0.09em",color:"rgba(255,255,255,0.35)",textTransform:"uppercase",marginBottom:6}}>Username</div>
@@ -271,213 +264,199 @@ function LoginModal({ shift, onSuccess, onClose }) {
           <input className="wt-input" type="password" placeholder="••••••••" value={pass} onChange={e=>setPass(e.target.value)} onKeyDown={e=>e.key==="Enter"&&submit()} autoComplete="current-password"/>
         </div>
 
-        <div style={{display:"flex",gap:10}}>
-          <button className="wt-btn wt-btn-ghost" style={{padding:"13px"}} onClick={onClose}>Cancel</button>
-          <button className="wt-btn wt-btn-primary" style={{opacity:loading?0.7:1}} onClick={submit} disabled={loading}>
-            {loading?"Checking…":"Clock In →"}
-          </button>
-        </div>
+        <button className="wt-btn wt-btn-primary" onClick={submit} disabled={busy} style={{opacity:busy?0.7:1}}>
+          {busy ? "Signing in…" : "Sign In →"}
+        </button>
 
-        <div style={{marginTop:16,fontSize:12,color:"rgba(255,255,255,0.2)",textAlign:"center",lineHeight:1.6}}>
-          Demo: james.wright / priya.sharma / dan.okafor / lucy.chen · pass123
+        <div style={{marginTop:18,fontSize:12,color:"rgba(255,255,255,0.22)",textAlign:"center",lineHeight:1.7}}>
+          Demo accounts — james.wright, priya.sharma,<br/>dan.okafor, lucy.chen, or admin<br/>
+          password: worktrack-demo
+        </div>
+        <div style={{marginTop:12,fontSize:11,color:"rgba(255,255,255,0.18)",textAlign:"center",lineHeight:1.6}}>
+          The API sleeps when idle — the first sign-in of the day<br/>can take a few seconds to wake it.
         </div>
       </div>
     </div>
   );
 }
-
 // ─── SHIFT LIST (employee home before clocking in) ─────────────────────────
-function ShiftList({ onLogin }) {
-  const [tick, setTick]       = useState(new Date());
-  const [role, setRole]       = useState("employee");
-  const [adminUser, setAdminUser] = useState("");
-  const [adminPass, setAdminPass] = useState("");
-  const [adminErr, setAdminErr]   = useState("");
-  const [adminLoad, setAdminLoad] = useState(false);
-  const [selectedShift, setSelectedShift] = useState(null);
+function ShiftList({ user, onClockedIn, onSignOut }) {
+  const [tick, setTick]     = useState(new Date());
+  const [shifts, setShifts] = useState(null);
+  const [err, setErr]       = useState("");
+  const [busy, setBusy]     = useState(false);
+  const [confirm, setConfirm] = useState(null);
 
   useEffect(() => { const id=setInterval(()=>setTick(new Date()),1000); return ()=>clearInterval(id); },[]);
 
-  const shifts  = generateShifts();
-  const status  = shiftStatus();
+  useEffect(() => {
+    let alive = true;
+    api.shifts()
+      .then(s => { if (alive) setShifts(s); })
+      .catch(e => { if (alive) { setErr(e.message); setShifts([]); } });
+    return () => { alive = false; };
+  }, []);
 
-  function tapShift(shift) {
-    if (!isToday(shift.date)) return;
-    if (status !== "active") return;
-    setSelectedShift(shift);
+  async function doClockIn() {
+    setBusy(true); setErr("");
+    try {
+      const session = await api.clockIn();
+      onClockedIn(session);
+    } catch (e) {
+      setErr(e.message);
+      setConfirm(null);
+    } finally {
+      setBusy(false);
+    }
   }
 
-  function adminLogin() {
-    setAdminErr(""); setAdminLoad(true);
-    setTimeout(() => {
-      setAdminLoad(false);
-      if (adminUser === ADMIN.username && adminPass === ADMIN.password)
-        return onLogin({ role:"admin", name:"Admin", username:"admin" });
-      setAdminErr("Incorrect admin credentials.");
-    }, 380);
-  }
+  if (shifts === null) return <Loading label="Loading your shifts…"/>;
 
-  const statusColor = status==="active"?"#6ee7b7":status==="before"?"#fde68a":"#ff8fa3";
-  const statusText  = status==="active"
-    ? `Open · ends ${fmt24(SHIFT_END.h,SHIFT_END.m)}`
-    : status==="before" ? `Opens ${fmt24(SHIFT_START.h,SHIFT_START.m)}`
-    : "Shift ended";
+  const todays = shifts.find(s => s.isToday);
 
   return (
     <div className="wt" style={{minHeight:"100vh",padding:"0 0 32px"}}>
-      {/* Background orb */}
       <div style={{position:"fixed",inset:0,overflow:"hidden",pointerEvents:"none"}}>
         <div style={{position:"absolute",top:"-20%",right:"-10%",width:500,height:500,borderRadius:"50%",background:"radial-gradient(circle,rgba(139,120,255,0.1) 0%,transparent 70%)"}}/>
       </div>
 
       {/* Header */}
-      <div style={{
-        background:"rgba(255,255,255,0.025)",borderBottom:"1px solid rgba(255,255,255,0.07)",
-        padding:"20px 20px 16px",position:"sticky",top:0,zIndex:10,backdropFilter:"blur(20px)"
-      }}>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+      <div style={{background:"rgba(255,255,255,0.025)",borderBottom:"1px solid rgba(255,255,255,0.07)",padding:"20px 20px 16px",position:"sticky",top:0,zIndex:10,backdropFilter:"blur(20px)"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
           <div style={{display:"flex",alignItems:"center",gap:10}}>
-            <div style={{width:32,height:32,borderRadius:9,background:"linear-gradient(135deg,#8b78ff,#b060f0)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:15}}>⏱</div>
-            <span style={{fontSize:17,fontWeight:800,color:"#fff",letterSpacing:"-0.2px"}}>WorkTrack</span>
+            <Avatar initials={user.initials} size={34}/>
+            <div>
+              <div style={{fontSize:15,fontWeight:700,color:"#fff"}}>{user.fullName}</div>
+              <div style={{fontSize:11,color:"rgba(255,255,255,0.35)"}}>ID: {user.employeeRef}</div>
+            </div>
           </div>
           <div style={{textAlign:"right"}}>
             <div className="mono" style={{fontSize:14,color:"rgba(255,255,255,0.6)"}}>{fmtClock(tick)}</div>
-            <div style={{fontSize:11,color:statusColor,fontWeight:600,marginTop:1}}>● {statusText}</div>
+            <button onClick={onSignOut} style={{background:"none",border:"none",color:"rgba(255,255,255,0.35)",fontSize:11,fontWeight:600,cursor:"pointer",padding:"2px 0",marginTop:1}}>Sign out</button>
           </div>
-        </div>
-
-        {/* Role toggle */}
-        <div className="toggle-track">
-          <button className={`toggle-opt ${role==="employee"?"active":"inactive"}`} onClick={()=>{setRole("employee");setAdminErr("");}}>My Shifts</button>
-          <button className={`toggle-opt ${role==="admin"?"active":"inactive"}`}    onClick={()=>{setRole("admin");setAdminErr("");}}>Admin</button>
         </div>
       </div>
 
       <div style={{padding:"20px 16px"}}>
+        <ErrorBox msg={err}/>
 
-        {/* ── Employee: shift list ── */}
-        {role==="employee" && (
-          <>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
-              <div>
-                <div style={{fontSize:18,fontWeight:800,color:"#fff"}}>Confirmed Shifts</div>
-                <div style={{fontSize:12,color:"rgba(255,255,255,0.35)",marginTop:2}}>Tap today's shift to clock in</div>
-              </div>
-              <span className="pill pill-purple">{shifts.length} upcoming</span>
-            </div>
-
-            {shifts.map((shift, i) => {
-              const today = isToday(shift.date);
-              const canTap = today && status === "active";
-              const locked = !today || status !== "active";
-              return (
-                <div
-                  key={shift.id}
-                  className={`shift-card${today?" today":""}${locked?" locked":""}`}
-                  style={{animationDelay:`${i*0.04}s`}}
-                  onClick={() => tapShift(shift)}
-                >
-                  {/* Left orb */}
-                  <div className={`shift-orb ${today?"shift-orb-today":"shift-orb-future"}`}>
-                    {today ? "📍" : "📅"}
-                  </div>
-
-                  {/* Info */}
-                  <div style={{flex:1,minWidth:0}}>
-                    <div style={{fontSize:15,fontWeight:700,color:"#fff",marginBottom:3}}>{shift.location}</div>
-                    <div style={{fontSize:12,color:"rgba(255,255,255,0.45)",marginBottom:6,lineHeight:1.5}}>
-                      {shift.label} · {fmt24(SHIFT_START.h,SHIFT_START.m)}–{fmt24(SHIFT_END.h,SHIFT_END.m)} · {shift.grade}
-                    </div>
-                    <div style={{display:"flex",alignItems:"center",gap:8}}>
-                      <div style={{
-                        fontSize:11,fontWeight:700,padding:"3px 10px",borderRadius:99,
-                        background:today?"rgba(139,120,255,0.15)":"rgba(59,130,246,0.1)",
-                        color:today?"#b39dff":"#93c5fd",
-                        border:`1px solid ${today?"rgba(139,120,255,0.3)":"rgba(59,130,246,0.2)"}`,
-                      }}>
-                        {today ? (status==="active"?"Tap to Clock In":status==="before"?`Opens ${fmt24(SHIFT_START.h,SHIFT_START.m)}`:"Shift Ended") : "Confirmed"}
-                      </div>
-                      <div style={{fontSize:11,color:"rgba(255,255,255,0.3)",fontWeight:600}}>{fmtDate(shift.date)}</div>
-                    </div>
-                  </div>
-
-                  {/* Right indicator */}
-                  <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:4}}>
-                    <div className={`shift-dot ${today && status==="active"?"shift-dot-active":"shift-dot-future"}`}
-                      style={today && status==="active" ? {animation:"pulse 1.5s ease infinite"} : {}}/>
-                    {today && status==="active" && (
-                      <div style={{fontSize:10,color:"rgba(139,120,255,0.7)",fontWeight:700,letterSpacing:"0.04em"}}>NOW</div>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </>
-        )}
-
-        {/* ── Admin login ── */}
-        {role==="admin" && (
-          <div style={{animation:"fadeIn 0.2s ease"}}>
-            <div style={{fontSize:18,fontWeight:800,color:"#fff",marginBottom:4}}>Admin Access</div>
-            <div style={{fontSize:13,color:"rgba(255,255,255,0.35)",marginBottom:24}}>Sign in to view and manage all sessions.</div>
-
-            {adminErr && (
-              <div style={{background:"rgba(255,77,109,0.1)",border:"1px solid rgba(255,77,109,0.25)",borderRadius:10,padding:"10px 14px",fontSize:13,color:"#ff8fa3",marginBottom:16,animation:"fadeIn 0.2s ease"}}>
-                {adminErr}
-              </div>
-            )}
-
-            <div style={{marginBottom:14}}>
-              <div style={{fontSize:11,fontWeight:700,letterSpacing:"0.09em",color:"rgba(255,255,255,0.35)",textTransform:"uppercase",marginBottom:6}}>Username</div>
-              <input className="wt-input" placeholder="admin" value={adminUser} onChange={e=>setAdminUser(e.target.value)} onKeyDown={e=>e.key==="Enter"&&adminLogin()} autoComplete="username"/>
-            </div>
-            <div style={{marginBottom:22}}>
-              <div style={{fontSize:11,fontWeight:700,letterSpacing:"0.09em",color:"rgba(255,255,255,0.35)",textTransform:"uppercase",marginBottom:6}}>Password</div>
-              <input className="wt-input" type="password" placeholder="••••••••" value={adminPass} onChange={e=>setAdminPass(e.target.value)} onKeyDown={e=>e.key==="Enter"&&adminLogin()} autoComplete="current-password"/>
-            </div>
-            <button className="wt-btn wt-btn-primary" onClick={adminLogin} disabled={adminLoad} style={{opacity:adminLoad?0.7:1}}>
-              {adminLoad?"Checking…":"Open Admin Panel →"}
-            </button>
-            <div style={{marginTop:16,fontSize:12,color:"rgba(255,255,255,0.2)",textAlign:"center"}}>
-              admin / admin123
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+          <div>
+            <div style={{fontSize:18,fontWeight:800,color:"#fff"}}>Confirmed Shifts</div>
+            <div style={{fontSize:12,color:"rgba(255,255,255,0.35)",marginTop:2}}>
+              {todays ? "Tap today's shift to clock in" : "No shift scheduled today"}
             </div>
           </div>
+          <span className="pill pill-purple">{shifts.length} upcoming</span>
+        </div>
+
+        {shifts.length === 0 && (
+          <div className="wt-card" style={{padding:40,textAlign:"center",color:"rgba(255,255,255,0.25)",fontSize:14}}>
+            Nothing scheduled.
+          </div>
         )}
+
+        {shifts.map((shift, i) => {
+          const today = shift.isToday;
+          return (
+            <div
+              key={shift.id}
+              className={`shift-card${today?" today":""}${today?"":" locked"}`}
+              style={{animationDelay:`${i*0.04}s`}}
+              onClick={() => today && setConfirm(shift)}
+            >
+              <div className={`shift-orb ${today?"shift-orb-today":"shift-orb-future"}`}>
+                {today ? "📍" : "📅"}
+              </div>
+
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{fontSize:15,fontWeight:700,color:"#fff",marginBottom:3}}>{shift.location}</div>
+                <div style={{fontSize:12,color:"rgba(255,255,255,0.45)",marginBottom:6,lineHeight:1.5}}>
+                  {fmtDay(shift.date)} · {fmt24(shift.startTime)}–{fmt24(shift.endTime)} · {shift.grade}
+                </div>
+                <div style={{display:"flex",alignItems:"center",gap:8}}>
+                  <div style={{
+                    fontSize:11,fontWeight:700,padding:"3px 10px",borderRadius:99,
+                    background:today?"rgba(139,120,255,0.15)":"rgba(59,130,246,0.1)",
+                    color:today?"#b39dff":"#93c5fd",
+                    border:`1px solid ${today?"rgba(139,120,255,0.3)":"rgba(59,130,246,0.2)"}`,
+                  }}>
+                    {today ? "Tap to Clock In" : "Confirmed"}
+                  </div>
+                  <div style={{fontSize:11,color:"rgba(255,255,255,0.3)",fontWeight:600}}>{fmtDate(shift.date)}</div>
+                </div>
+              </div>
+
+              <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:4}}>
+                <div className={`shift-dot ${today?"shift-dot-active":"shift-dot-future"}`}
+                  style={today ? {animation:"pulse 1.5s ease infinite"} : {}}/>
+                {today && <div style={{fontSize:10,color:"rgba(139,120,255,0.7)",fontWeight:700,letterSpacing:"0.04em"}}>NOW</div>}
+              </div>
+            </div>
+          );
+        })}
       </div>
 
-      {/* Login modal */}
-      {selectedShift && (
-        <LoginModal
-          shift={selectedShift}
-          onSuccess={u => { setSelectedShift(null); onLogin(u); }}
-          onClose={() => setSelectedShift(null)}
-        />
+      {/* Confirm clock in */}
+      {confirm && (
+        <div className="modal-bg" onClick={()=>!busy&&setConfirm(null)}>
+          <div className="modal-box" onClick={e=>e.stopPropagation()}>
+            <div style={{background:"rgba(139,120,255,0.08)",border:"1px solid rgba(139,120,255,0.2)",borderRadius:14,padding:"14px 16px",marginBottom:22}}>
+              <div style={{fontSize:13,fontWeight:700,color:"#b39dff",marginBottom:4}}>Clocking in for</div>
+              <div style={{fontSize:16,fontWeight:700,color:"#fff"}}>{confirm.location}</div>
+              <div style={{fontSize:13,color:"rgba(255,255,255,0.45)",marginTop:3}}>
+                {fmtDay(confirm.date)} · {fmtDate(confirm.date)} · {fmt24(confirm.startTime)}–{fmt24(confirm.endTime)} · {confirm.grade}
+              </div>
+            </div>
+            <div style={{display:"flex",gap:10}}>
+              <button className="wt-btn wt-btn-ghost" style={{padding:"13px"}} onClick={()=>setConfirm(null)} disabled={busy}>Cancel</button>
+              <button className="wt-btn wt-btn-primary" onClick={doClockIn} disabled={busy} style={{opacity:busy?0.7:1}}>
+                {busy?"Clocking in…":"Clock In →"}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
 }
-
 // ─── EMPLOYEE DASHBOARD (after clocking in) ────────────────────────────────
-function EmployeeDash({ user, onLogout }) {
+function EmployeeDash({ user, session, onClockedOut, onSignOut }) {
   const [tick, setTick] = useState(new Date());
-  const [secs, setSecs] = useState(secsUntilEnd());
-  const [late, setLate] = useState(false);
   const [confirmOut, setConfirmOut] = useState(false);
-  const lateRef = useRef(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr]   = useState("");
+
+  // The shift window comes from the session's own shift, so start, end and
+  // progress reflect what the server actually scheduled rather than a
+  // constant invented when the page loaded.
+  const start = shiftMoment(session.shiftDate, session.shiftStart);
+  const end   = shiftMoment(session.shiftDate, session.shiftEnd);
+  const totalMs = Math.max(1, end - start);
 
   useEffect(() => {
-    const id = setInterval(() => {
-      setTick(new Date());
-      const s = secsUntilEnd(); setSecs(s);
-      if (s===0 && !lateRef.current) { lateRef.current=true; setLate(true); }
-    }, 1000);
+    const id = setInterval(() => setTick(new Date()), 1000);
     return () => clearInterval(id);
   }, []);
 
-  const elapsed  = Date.now() - user.loginTime;
-  const shiftPct = Math.min(100, Math.round((elapsed / (SHIFT_TOTAL_SECS * 1000)) * 100));
+  const secs = secsUntil(end);
+  const late = tick > end;
 
-  function doLogout() { onLogout({ ...user, logoutTime: Date.now() }); }
+  const elapsed  = tick - new Date(session.clockInAt);
+  const shiftPct = Math.min(100, Math.max(0, Math.round(((tick - start) / totalMs) * 100)));
+
+  async function doClockOut() {
+    setBusy(true); setErr("");
+    try {
+      await api.clockOut();
+      onClockedOut();
+    } catch (e) {
+      setErr(e.message);
+      setConfirmOut(false);
+    } finally {
+      setBusy(false);
+    }
+  }
 
   return (
     <div className="wt" style={{minHeight:"100vh",padding:"0 0 32px"}}>
@@ -485,66 +464,63 @@ function EmployeeDash({ user, onLogout }) {
         <div style={{position:"absolute",top:"-15%",right:"-10%",width:500,height:500,borderRadius:"50%",background:`radial-gradient(circle,${late?"rgba(255,77,109,0.1)":"rgba(139,120,255,0.1)"} 0%,transparent 70%)`,transition:"background 1s ease"}}/>
       </div>
 
-      {/* Header */}
       <div style={{background:"rgba(255,255,255,0.025)",borderBottom:"1px solid rgba(255,255,255,0.07)",padding:"20px",position:"sticky",top:0,zIndex:10,backdropFilter:"blur(20px)"}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
           <div style={{display:"flex",alignItems:"center",gap:12}}>
             <Avatar initials={user.initials} size={38} color={late?"#ff4d6d":"#8b78ff"}/>
             <div>
-              <div style={{fontSize:15,fontWeight:700,color:"#fff"}}>{user.name}</div>
-              <div style={{fontSize:11,color:"rgba(255,255,255,0.35)",fontWeight:500}}>ID: {user.id}</div>
+              <div style={{fontSize:15,fontWeight:700,color:"#fff"}}>{user.fullName}</div>
+              <div style={{fontSize:11,color:"rgba(255,255,255,0.35)",fontWeight:500}}>ID: {user.employeeRef}</div>
             </div>
           </div>
           <div style={{textAlign:"right"}}>
             <div className="mono" style={{fontSize:14,color:"rgba(255,255,255,0.55)"}}>{fmtClock(tick)}</div>
-            <div style={{fontSize:11,color:"rgba(255,255,255,0.25)",marginTop:1}}>WorkTrack</div>
+            <button onClick={onSignOut} style={{background:"none",border:"none",color:"rgba(255,255,255,0.25)",fontSize:11,fontWeight:600,cursor:"pointer",padding:"2px 0",marginTop:1}}>Sign out</button>
           </div>
         </div>
       </div>
 
       <div style={{padding:"20px 16px"}}>
-        {/* Shift info bar */}
+        <ErrorBox msg={err}/>
+
         <div style={{background:"rgba(139,120,255,0.07)",border:"1px solid rgba(139,120,255,0.2)",borderRadius:14,padding:"12px 16px",marginBottom:20,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
           <div>
-            <div style={{fontSize:13,fontWeight:700,color:"#b39dff"}}>{user.shift?.location}</div>
+            <div style={{fontSize:13,fontWeight:700,color:"#b39dff"}}>{session.location}</div>
             <div style={{fontSize:12,color:"rgba(255,255,255,0.4)",marginTop:2}}>
-              {fmtDay(user.shift?.date)} · {fmt24(SHIFT_START.h,SHIFT_START.m)}–{fmt24(SHIFT_END.h,SHIFT_END.m)}
+              {fmtDay(session.shiftDate)} · {fmt24(session.shiftStart)}–{fmt24(session.shiftEnd)}
             </div>
           </div>
           <span className="pill pill-green"><span className="pill-dot" style={{background:"#34d399"}}/>ACTIVE</span>
         </div>
 
-        {/* Late banner */}
         {late && (
           <div className="late-banner">
             <span style={{fontSize:20,animation:"pulse 1.2s ease infinite"}}>🚨</span>
             <div>
               <div style={{fontSize:14,fontWeight:700,color:"#ff8fa3"}}>Still clocked in</div>
-              <div style={{fontSize:12,color:"rgba(255,255,255,0.45)",marginTop:2}}>Shift ended at {fmt24(SHIFT_END.h,SHIFT_END.m)} — please clock out.</div>
+              <div style={{fontSize:12,color:"rgba(255,255,255,0.45)",marginTop:2}}>Shift ended at {fmt24(session.shiftEnd)} — please clock out.</div>
             </div>
           </div>
         )}
 
-        {/* Ring */}
         <div className="wt-card" style={{padding:28,textAlign:"center",marginBottom:16}}>
-          <ShiftRing secsLeft={secs} late={late} size={180}/>
+          <ShiftRing secsLeft={secs} late={late} size={180} totalSecs={totalMs/1000}/>
           <div style={{marginTop:18,display:"flex",justifyContent:"center",gap:24}}>
             <div style={{textAlign:"center"}}>
-              <div className="mono" style={{fontSize:14,fontWeight:500,color:"#fff"}}>{fmt24(SHIFT_START.h,SHIFT_START.m)}</div>
+              <div className="mono" style={{fontSize:14,fontWeight:500,color:"#fff"}}>{fmt24(session.shiftStart)}</div>
               <div style={{fontSize:10,color:"rgba(255,255,255,0.3)",fontWeight:600,letterSpacing:"0.08em",textTransform:"uppercase",marginTop:2}}>Start</div>
             </div>
             <div style={{width:1,background:"rgba(255,255,255,0.08)"}}/>
             <div style={{textAlign:"center"}}>
-              <div className="mono" style={{fontSize:14,fontWeight:500,color:"#fff"}}>{fmt24(SHIFT_END.h,SHIFT_END.m)}</div>
+              <div className="mono" style={{fontSize:14,fontWeight:500,color:"#fff"}}>{fmt24(session.shiftEnd)}</div>
               <div style={{fontSize:10,color:"rgba(255,255,255,0.3)",fontWeight:600,letterSpacing:"0.08em",textTransform:"uppercase",marginTop:2}}>End</div>
             </div>
           </div>
         </div>
 
-        {/* Stats */}
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:16}}>
           <div className="stat-card">
-            <div className="mono" style={{fontSize:19,fontWeight:500,color:"#fff"}}>{fmtTimestamp(user.loginTime)}</div>
+            <div className="mono" style={{fontSize:19,fontWeight:500,color:"#fff"}}>{fmtTimestamp(session.clockInAt)}</div>
             <div style={{fontSize:11,color:"rgba(255,255,255,0.3)",fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",marginTop:4}}>Clocked In</div>
           </div>
           <div className="stat-card">
@@ -553,7 +529,6 @@ function EmployeeDash({ user, onLogout }) {
           </div>
         </div>
 
-        {/* Progress */}
         <div className="wt-card" style={{padding:"14px 18px",marginBottom:16}}>
           <div style={{display:"flex",justifyContent:"space-between",marginBottom:8}}>
             <span style={{fontSize:12,color:"rgba(255,255,255,0.4)",fontWeight:600}}>Shift progress</span>
@@ -573,15 +548,16 @@ function EmployeeDash({ user, onLogout }) {
         </button>
       </div>
 
-      {/* Confirm clock out */}
       {confirmOut && (
-        <div className="modal-bg" onClick={()=>setConfirmOut(false)}>
+        <div className="modal-bg" onClick={()=>!busy&&setConfirmOut(false)}>
           <div className="modal-box" onClick={e=>e.stopPropagation()}>
             <div style={{fontSize:18,fontWeight:700,color:"#fff",marginBottom:8}}>Clock out?</div>
             <div style={{fontSize:14,color:"rgba(255,255,255,0.5)",marginBottom:24}}>This will end your session and record your finish time.</div>
             <div style={{display:"flex",gap:10}}>
-              <button className="wt-btn wt-btn-ghost" style={{padding:"11px"}} onClick={()=>setConfirmOut(false)}>Cancel</button>
-              <button className="wt-btn wt-btn-danger" style={{padding:"11px"}} onClick={doLogout}>Clock Out</button>
+              <button className="wt-btn wt-btn-ghost" style={{padding:"11px"}} onClick={()=>setConfirmOut(false)} disabled={busy}>Cancel</button>
+              <button className="wt-btn wt-btn-danger" style={{padding:"11px"}} onClick={doClockOut} disabled={busy}>
+                {busy?"Clocking out…":"Clock Out"}
+              </button>
             </div>
           </div>
         </div>
@@ -589,25 +565,57 @@ function EmployeeDash({ user, onLogout }) {
     </div>
   );
 }
-
 // ─── ADMIN DASHBOARD ────────────────────────────────────────────────────────
-function AdminDash({ onLogout, sessions, setSessions }) {
-  const [tick, setTick]  = useState(new Date());
-  const [tab,  setTab]   = useState("live");
-  const [toast,setToast] = useState("");
-  const [,forceUpdate]   = useState(0);
+function AdminDash({ onSignOut }) {
+  const [tick, setTick]   = useState(new Date());
+  const [tab,  setTab]    = useState("live");
+  const [toast,setToast]  = useState("");
+  const [rows, setRows]   = useState(null);
+  const [err,  setErr]    = useState("");
+  const [busyId, setBusyId] = useState(null);
 
-  useEffect(()=>{const id=setInterval(()=>{setTick(new Date());forceUpdate(x=>x+1);},1000);return()=>clearInterval(id);},[]);
+  // Clocks tick every second, but the server is only polled every ten. A
+  // per-second poll would be sixty requests a minute for a dashboard whose
+  // rows change a handful of times a day.
+  const refresh = useCallback(async () => {
+    try {
+      const all = await api.adminAll();
+      setRows(all);
+      setErr("");
+    } catch (e) {
+      setErr(e.message);
+      setRows(r => r ?? []);
+    }
+  }, []);
 
-  function forceOut(username, name) {
-    setSessions(p=>p.map(s=>s.username===username&&!s.logoutTime?{...s,logoutTime:Date.now(),forcedOut:true}:s));
-    setToast(`${name.split(" ")[0]} clocked out by admin`);
+  useEffect(() => {
+    refresh();
+    const poll = setInterval(refresh, 10000);
+    const clock = setInterval(() => setTick(new Date()), 1000);
+    return () => { clearInterval(poll); clearInterval(clock); };
+  }, [refresh]);
+
+  async function forceOut(session) {
+    setBusyId(session.id);
+    try {
+      await api.adminForceOut(session.id);
+      setToast(`${session.employeeName.split(" ")[0]} clocked out by admin`);
+      await refresh();
+    } catch (e) {
+      setErr(e.message);
+    } finally {
+      setBusyId(null);
+    }
   }
 
-  const active  = sessions.filter(s=>!s.logoutTime);
-  const history = sessions.filter(s=> s.logoutTime);
-  const avgMs   = history.length ? history.reduce((a,s)=>a+(s.logoutTime-s.loginTime),0)/history.length : 0;
-  const lateCount = active.filter(()=>secsUntilEnd()===0).length;
+  if (rows === null) return <Loading label="Loading sessions…"/>;
+
+  const active  = rows.filter(s => s.open);
+  const history = rows.filter(s => !s.open);
+  const avgMs   = history.length
+    ? history.reduce((a,s) => a + (new Date(s.clockOutAt) - new Date(s.clockInAt)), 0) / history.length
+    : 0;
+  const lateCount = active.filter(s => s.overrunning).length;
 
   const TABS=[{id:"live",icon:"⚡",label:"Live"},{id:"history",icon:"📋",label:"History"}];
 
@@ -629,12 +637,14 @@ function AdminDash({ onLogout, sessions, setSessions }) {
         ))}
         <div style={{marginTop:"auto"}}>
           <div className="mono" style={{fontSize:13,color:"rgba(255,255,255,0.35)",marginBottom:12,paddingLeft:4}}>{fmtClock(tick)}</div>
-          <button className="sidebar-item" onClick={onLogout}><span className="sidebar-icon">→</span>Sign Out</button>
+          <button className="sidebar-item" onClick={onSignOut}><span className="sidebar-icon">→</span>Sign Out</button>
         </div>
       </div>
 
       <div className="admin-main">
         {toast&&<Toast msg={toast} onDone={()=>setToast("")}/>}
+
+        <ErrorBox msg={err}/>
 
         <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:14,marginBottom:28}}>
           {[
@@ -663,20 +673,16 @@ function AdminDash({ onLogout, sessions, setSessions }) {
                 <table>
                   <thead><tr><th>Employee</th><th>Shift</th><th>In</th><th>Duration</th><th>Status</th><th>Action</th></tr></thead>
                   <tbody>
-                    {active.map(s=>{
-                      const el=Date.now()-s.loginTime;
-                      const isLate=secsUntilEnd()===0;
-                      return(
-                        <tr key={s.username} className="wt-row-hover">
-                          <td><div style={{display:"flex",alignItems:"center",gap:10}}><Avatar initials={s.initials} size={30} color={isLate?"#ff4d6d":"#8b78ff"}/><div><div style={{fontWeight:600,color:"#fff",fontSize:14}}>{s.name}</div><div style={{fontSize:11,color:"rgba(255,255,255,0.3)"}}>{s.id}</div></div></div></td>
-                          <td style={{fontSize:13}}>{s.shift?.location?.split(" ").slice(-2).join(" ")}<br/><span style={{color:"rgba(255,255,255,0.35)",fontSize:11}}>{s.shift&&fmtDate(s.shift.date)}</span></td>
-                          <td className="mono">{fmtTimestamp(s.loginTime)}</td>
-                          <td className="mono">{fmtDuration(el)}</td>
-                          <td>{isLate?<span className="pill pill-red"><span className="pill-dot" style={{background:"#ff4d6d",animation:"pulse 1s infinite"}}/>OVERTIME</span>:<span className="pill pill-green"><span className="pill-dot" style={{background:"#34d399"}}/>ON SHIFT</span>}</td>
-                          <td><button className="wt-btn-sm" style={{background:"rgba(255,77,109,0.12)",color:"#ff8fa3",border:"1px solid rgba(255,77,109,0.25)"}} onClick={()=>forceOut(s.username,s.name)}>Force Out</button></td>
-                        </tr>
-                      );
-                    })}
+                    {active.map(s=>(
+                      <tr key={s.id} className="wt-row-hover">
+                        <td><div style={{display:"flex",alignItems:"center",gap:10}}><Avatar initials={s.initials} size={30} color={s.overrunning?"#ff4d6d":"#8b78ff"}/><div><div style={{fontWeight:600,color:"#fff",fontSize:14}}>{s.employeeName}</div><div style={{fontSize:11,color:"rgba(255,255,255,0.3)"}}>{s.employeeRef}</div></div></div></td>
+                        <td style={{fontSize:13}}>{s.location}<br/><span style={{color:"rgba(255,255,255,0.35)",fontSize:11}}>{fmtDate(s.shiftDate)} · {fmt24(s.shiftStart)}–{fmt24(s.shiftEnd)}</span></td>
+                        <td className="mono">{fmtTimestamp(s.clockInAt)}</td>
+                        <td className="mono">{fmtDuration(tick - new Date(s.clockInAt))}</td>
+                        <td>{s.overrunning?<span className="pill pill-red"><span className="pill-dot" style={{background:"#ff4d6d",animation:"pulse 1s infinite"}}/>OVERTIME</span>:<span className="pill pill-green"><span className="pill-dot" style={{background:"#34d399"}}/>ON SHIFT</span>}</td>
+                        <td><button className="wt-btn-sm" disabled={busyId===s.id} style={{background:"rgba(255,77,109,0.12)",color:"#ff8fa3",border:"1px solid rgba(255,77,109,0.25)",opacity:busyId===s.id?0.5:1}} onClick={()=>forceOut(s)}>{busyId===s.id?"…":"Force Out"}</button></td>
+                      </tr>
+                    ))}
                   </tbody>
                 </table>
               )}
@@ -694,14 +700,14 @@ function AdminDash({ onLogout, sessions, setSessions }) {
                 <table>
                   <thead><tr><th>Employee</th><th>Shift</th><th>In</th><th>Out</th><th>Duration</th><th>Note</th></tr></thead>
                   <tbody>
-                    {[...history].reverse().map((s,i)=>(
-                      <tr key={i} className="wt-row-hover" style={{animation:`slideIn 0.2s ease ${i*0.04}s both`}}>
-                        <td><div style={{display:"flex",alignItems:"center",gap:10}}><Avatar initials={s.initials} size={28} color="rgba(255,255,255,0.3)"/><div><div style={{fontWeight:600,color:"#fff",fontSize:14}}>{s.name}</div><div style={{fontSize:11,color:"rgba(255,255,255,0.3)"}}>{s.id}</div></div></div></td>
-                        <td style={{fontSize:13}}>{s.shift?.location?.split(" ").slice(-2).join(" ")}<br/><span style={{color:"rgba(255,255,255,0.35)",fontSize:11}}>{s.shift&&fmtDate(s.shift.date)}</span></td>
-                        <td className="mono">{fmtTimestamp(s.loginTime)}</td>
-                        <td className="mono">{fmtTimestamp(s.logoutTime)}</td>
-                        <td className="mono">{fmtDuration(s.logoutTime-s.loginTime)}</td>
-                        <td>{s.forcedOut?<span className="pill pill-amber">ADMIN OUT</span>:<span className="pill pill-purple">SELF OUT</span>}</td>
+                    {history.map((s,i)=>(
+                      <tr key={s.id} className="wt-row-hover" style={{animation:`slideIn 0.2s ease ${Math.min(i,10)*0.04}s both`}}>
+                        <td><div style={{display:"flex",alignItems:"center",gap:10}}><Avatar initials={s.initials} size={28} color="rgba(255,255,255,0.3)"/><div><div style={{fontWeight:600,color:"#fff",fontSize:14}}>{s.employeeName}</div><div style={{fontSize:11,color:"rgba(255,255,255,0.3)"}}>{s.employeeRef}</div></div></div></td>
+                        <td style={{fontSize:13}}>{s.location}<br/><span style={{color:"rgba(255,255,255,0.35)",fontSize:11}}>{fmtDate(s.shiftDate)}</span></td>
+                        <td className="mono">{fmtTimestamp(s.clockInAt)}</td>
+                        <td className="mono">{fmtTimestamp(s.clockOutAt)}</td>
+                        <td className="mono">{fmtDuration(new Date(s.clockOutAt) - new Date(s.clockInAt))}</td>
+                        <td>{s.endedBy==="ADMIN"?<span className="pill pill-amber">ADMIN OUT</span>:<span className="pill pill-purple">SELF OUT</span>}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -724,35 +730,69 @@ function DemoNotice() {
       color:"rgba(255,255,255,0.62)", font:"500 12px/1.5 system-ui, sans-serif",
       padding:"9px 16px", textAlign:"center", backdropFilter:"blur(6px)"
     }}>
-      Demo build — seeded sample data, no real employees. Nothing is saved: a refresh resets everything.
+      Demo build — seeded sample data, no real employees. Clock-ins are saved to a real database and survive a refresh.
     </div>
   );
 }
 
 export default function App() {
-  const [user,     setUser]     = useState(null);
-  const [sessions, setSessions] = useState([]);
+  const [user, setUser]       = useState(null);
+  const [session, setSession] = useState(null);
+  const [booting, setBooting] = useState(true);
 
-  function login(u) {
-    setUser(u);
-    if (u.role==="employee") setSessions(p=>[...p,{...u}]);
-  }
+  // A token in localStorage means the last visit signed in. Ask the server
+  // who it belongs to and whether that person is mid-shift, so a refresh
+  // resumes where they were instead of dropping them at the login screen.
+  useEffect(() => {
+    let alive = true;
+    async function restore() {
+      if (!getToken()) { if (alive) setBooting(false); return; }
+      try {
+        const me = await api.me();
+        if (!alive) return;
+        setUser(me);
+        if (me.role === "EMPLOYEE") {
+          const open = await api.currentSession();
+          if (alive) setSession(open);
+        }
+      } catch {
+        setToken(null);            // expired or rejected
+      } finally {
+        if (alive) setBooting(false);
+      }
+    }
+    restore();
+    return () => { alive = false; };
+  }, []);
 
-  function empLogout(record) {
-    setSessions(p=>p.map(s=>s.username===record.username&&!s.logoutTime?record:s));
+  function signOut() {
+    setToken(null);
     setUser(null);
+    setSession(null);
   }
+
+  async function onSignedIn(u) {
+    setUser(u);
+    if (u.role === "EMPLOYEE") {
+      try { setSession(await api.currentSession()); } catch { setSession(null); }
+    }
+  }
+
+  let screen;
+  if (booting)          screen = <Loading label="Waking the server…"/>;
+  else if (!user)       screen = <LoginScreen onSignedIn={onSignedIn}/>;
+  else if (user.role === "ADMIN")
+                        screen = <AdminDash onSignOut={signOut}/>;
+  else if (session)     screen = <EmployeeDash user={user} session={session}
+                                    onClockedOut={()=>setSession(null)} onSignOut={signOut}/>;
+  else                  screen = <ShiftList user={user}
+                                    onClockedIn={setSession} onSignOut={signOut}/>;
 
   return (
     <>
       <StyleInjector/>
       <DemoNotice/>
-      {!user
-        ? <ShiftList onLogin={login}/>
-        : user.role==="admin"
-          ? <AdminDash onLogout={()=>setUser(null)} sessions={sessions} setSessions={setSessions}/>
-          : <EmployeeDash user={user} onLogout={empLogout}/>
-      }
+      {screen}
     </>
   );
 }
