@@ -24,9 +24,17 @@ Needs Java 21+ and a PostgreSQL database. `JWT_SECRET` has no default and
 the app will not start without one — an app that falls back to a built-in
 signing key is an app shipping with a public one.
 
-To get sample staff and a week of shifts, set `DEMO_SEED=true` and
-`DEMO_PASSWORD` to something. Seeding is skipped if the database already
-has employees, so it cannot overwrite real data.
+To get sample staff, set `DEMO_SEED=true` and `DEMO_PASSWORD` to something.
+Seeding is skipped if the database already has employees, so it cannot
+overwrite real data.
+
+Set `DEMO_TOP_UP_SHIFTS=true` as well to keep their shifts populated. The
+seeder deliberately creates no shifts: it runs once, so anything it wrote
+would be in the past a week later — which is how the demo went stale the
+first time. `DemoShiftMaintainer` owns the shift pattern instead and extends
+the window to two weeks ahead whenever shifts are requested. It runs on
+demand rather than on a schedule because the app scales to zero when idle,
+and a `@Scheduled` job cannot fire on a stopped machine.
 
 ## Tests
 

@@ -1,7 +1,8 @@
 package com.worktrack.config;
 
-import com.worktrack.domain.*;
-import com.worktrack.repo.*;
+import com.worktrack.domain.Employee;
+import com.worktrack.domain.Role;
+import com.worktrack.repo.EmployeeRepository;
 import org.slf4j.*;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.ApplicationRunner;
@@ -10,7 +11,6 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
-import java.time.*;
 import java.util.List;
 
 /**
@@ -37,8 +37,8 @@ public class DemoDataSeeder {
             new Person("admin",        "Site Admin",   "SA", "00001", Role.ADMIN));
 
     @Bean
-    ApplicationRunner seedDemoData(EmployeeRepository employees, ShiftRepository shifts,
-                                   PasswordEncoder encoder, Clock clock,
+    ApplicationRunner seedDemoData(EmployeeRepository employees,
+                                   PasswordEncoder encoder,
                                    @Value("${worktrack.demo.password:}") String demoPassword) {
         return args -> {
             if (demoPassword == null || demoPassword.isBlank()) {
@@ -52,26 +52,19 @@ public class DemoDataSeeder {
             }
 
             String hash = encoder.encode(demoPassword);
-            LocalDate monday = LocalDate.now(clock).with(java.time.DayOfWeek.MONDAY);
 
             for (Person p : PEOPLE) {
-                Employee e = employees.save(
-                        new Employee(p.username(), hash, p.name(), p.initials(), p.ref(), p.role()));
-
-                if (p.role() == Role.ADMIN) continue;
-
-                // Monday to Saturday, matching the shift pattern the UI shows.
-                for (int i = 0; i < 6; i++) {
-                    LocalDate day = monday.plusDays(i);
-                    boolean saturday = day.getDayOfWeek() == DayOfWeek.SATURDAY;
-                    shifts.save(new Shift(e, day,
-                            LocalTime.of(saturday ? 9 : 8, 0),
-                            LocalTime.of(saturday ? 13 : 16, 30),
-                            "Grade 8", "Manchester Central"));
-                }
+                employees.save(new Employee(p.username(), hash, p.name(),
+                        p.initials(), p.ref(), p.role()));
             }
-            log.info("Seeded {} demo employees with shifts for week beginning {}",
-                    PEOPLE.size(), monday);
+
+            // Shifts are deliberately not created here. This runs once, so any
+            // shifts it wrote would be in the past a week later — which is
+            // exactly how the demo went stale. DemoShiftMaintainer owns the
+            // shift pattern and keeps the window rolling forward; enable it
+            // with DEMO_TOP_UP_SHIFTS.
+            log.info("Seeded {} demo employees. Set worktrack.demo.top-up-shifts=true "
+                    + "to keep their shifts populated.", PEOPLE.size());
         };
     }
 }

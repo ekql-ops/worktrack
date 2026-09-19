@@ -46,9 +46,12 @@ worktrack:
   cors:
     allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:3000}
   demo:
-    # Seeds the sample employees and a week of shifts. Off unless asked for.
+    # Seeds the sample employees on first boot. Off unless asked for.
     seed: ${DEMO_SEED:false}
     password: ${DEMO_PASSWORD:}
+    # Keeps the demo's shifts rolling forward so the window is never in the
+    # past. Independent of `seed`, which only ever runs once.
+    top-up-shifts: ${DEMO_TOP_UP_SHIFTS:false}
 
 server:
   port: ${PORT:8080}

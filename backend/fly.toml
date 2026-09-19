@@ -14,6 +14,9 @@ primary_region = 'lhr'          # London, nearest the users this is for
 [env]
   PORT = '8080'
   WORKTRACK_ZONE = 'Europe/London'
+  # Keeps the demo's shift window rolling forward. A boolean feature flag,
+  # not a credential, so it lives here rather than in fly secrets.
+  DEMO_TOP_UP_SHIFTS = 'true'
   # The JVM does not read a container's memory limit on its own; without
   # this it sizes the heap for the host and gets OOM-killed.
   JAVA_OPTS = '-XX:MaxRAMPercentage=70 -XX:+UseSerialGC'
